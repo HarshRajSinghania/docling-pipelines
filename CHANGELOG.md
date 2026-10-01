@@ -1,1 +1,81 @@
-placeholder
+# Changelog
+
+All notable changes to `docling-pipelines` will be documented in this file.
+
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Versioning follows [Semantic Versioning 2.0.0](https://semver.org/).
+
+---
+
+## [Unreleased]
+
+### Changed
+
+- **`PIIAndHAPAnnotator` — decorator-based adapter registry** — Replaced the `if/elif` provider chain in `PIIHAPService` with a `PIIAndHAPDetectionFactory` backed by a `@register_pii_and_hap_detection_adapter` decorator. Each provider adapter (`WatsonxPIIAndHAPAdapter`, `LiteLLMPIIAndHAPAdapter`) now self-registers at import time and fully encapsulates its own detection path behind `PIIAndHAPDetectionPort`. `PIIHAPService` is reduced to a thin wrapper that receives an adapter via constructor injection — no provider branching, no `use_specialized_api` flag. Adding a new provider is now a single-file change.
+
+### Fixed
+
+- **Accelerated Docling extraction preserves OCR configuration** — The cached GPU `DocumentConverter` now applies the same standard-pipeline OCR settings as the CPU path (`ocr.enabled`, engine, mode, languages, and engine-specific options) onto `ThreadedPdfPipelineOptions`. Non-default OCR that cannot be constructed fails at adapter init instead of being silently ignored. Fixes #119.
+
+- **Execution-granularity benchmark flow size** — S3 benchmark flows now use the configured prefix and `max_files` limit without embedding a corpus-wide exclusion list, avoiding Prefect validation payload-size failures.
+
+- **`docling-pipelines-api` console command** — The entry point previously pointed at the FastAPI `app` object (`docpipe.api.main:app`), causing a `TypeError` on invocation. A `run()` launcher function has been added to `src/docpipe/api/main.py` and `pyproject.toml` now registers `docpipe.api.main:run` as the entry point. Running `docling-pipelines-api` now correctly starts a Uvicorn server on `127.0.0.1:8080`.
+
+### Added
+
+- **Milvus Lite support** — The `VectorDBOperator` Milvus adapter now supports `auth_type: "lite"` for container-free local operation using an embedded `.db` file (no Docker, Podman, or external Milvus service required). Set `uri` to a local path and `index_type` to `FLAT`. The `milvus-lite==3.2.1` package is now a core dependency. The adapter validates that unsupported index types (anything other than `FLAT`) are rejected at initialisation time for Lite connections. The `text` field in the Milvus schema is now nullable in dense mode so chunk rows without content can be inserted. `MilvusAdapter.close()` is called after every `transform()` to release the file lock. Adds a `sample_flows/vectordb/milvus_lite_integration.json` container-free sample flow and an integration test (`tests/integration/test_ingest_extract_chunk_embed_milvus_lite.py`) covering the full ingest → extract → chunk → embeddings (sentence-transformers) → Milvus Lite pipeline.
+
+- **Dropbox ingest source adapter** — new `dropbox` provider for `IngestSourceOperator`, built on the official Dropbox Python SDK. Supports access-token and refresh-token (long-lived) OAuth2 authentication, cursor-based pagination, recursive or single-level folder traversal, single-file ingestion by path or file id, extension / size / glob-exclusion filters, `max_files` limits, and lazy binary retrieval by Dropbox file id. Adds the `dropbox==12.2.1` dependency. See [the adapter README](src/docpipe/core/operators/ingest/adapters/outbound/sources/dropbox/README.md).
+
+- **Full OCR engine exposure** — Both `docling_library` and `docling_serve` providers now accept an `ocr` block inside `text_extraction.provider_config`. Users can set `ocr.engine` (8 engines: `auto`, `easyocr`, `tesserocr`, `tesseract`, `rapidocr`, `ocrmac`, `kserve_v2_ocr`, `nemotron-ocr`), `ocr.mode` (`default`, `full_page`, `layout_regions`, `pdf_aware_layout_regions`), `ocr.enabled` (bool), and `ocr.engine_options` (pass-through dict). The previously hardcoded `ocr_preset: "auto"` default in `DoclingServeClient` is removed — when no engine is specified, the docling-serve instance uses its own default. Old `do_ocr` / `ocr_engine` / `ocr_languages` fields remain functional but are deprecated in favour of the new `ocr` block.
+
+- **docling-pipelines-slim** — New lightweight package variant that excludes certain operator dependencies. Use when your codebase doesn't require specific built-in operators. See [docs/guides/SLIM_VARIANT.md](docs/guides/SLIM_VARIANT.md) for installation and usage details.
+- **CI: slim wheel push** — `Build and Push Wheel` Jenkins stage now builds and pushes `docling-pipelines-slim` to Artifactory alongside the main wheel under the same `docling-pipelines/${VERSION}/` folder.
+- `StorageOutputOperator` — writes pipeline documents to a pluggable storage destination with three modes: `processed_content`, `refetch_original`, and `comprehensive_export`. Includes `FilesystemDestinationAdapter`, `S3DestinationAdapter`, and `DestinationAdapterFactory` for extensible backend support.
+- `S3DestinationAdapter` — writes to Amazon S3 and S3-compatible storage (IBM COS, MinIO) with env-var credential resolution, pre-flight bucket validation, `create_dirs` prefix checking, and optional `verify_expected_bucket_owner` via STS.
+- `ibm_cos` provider alias — routes to `S3DestinationAdapter` with a custom `endpoint_url`; no separate adapter required. Mirrors the same alias pattern added to `SourceAdapterFactory`.
+- `SharePointDestinationAdapter` — writes to SharePoint document libraries via Microsoft Graph API (client credentials flow) with pre-flight drive/folder validation, overwrite control, and hierarchical path support.
+- Hierarchical multi-source path namespacing — when `ingest_source` is configured with multiple `paths`, each source root is namespaced by its folder name at the destination to avoid collisions.
+- `onedrive` provider alias — routes to `SharePointDestinationAdapter`; identical `connection_params` and `credentials` to `sharepoint`. Suitable for personal and organisational OneDrive drives.
+- `GoogleDriveDestinationAdapter` — writes to Google Drive folders via the Drive API v3 with resumable uploads, lazy sub-folder creation with instance-level caching, overwrite control, and both Service Account and OAuth2 authentication.
+- Initial public open-source release preparation
+- Release process documentation (`RELEASE_PROCESS.md`)
+- Deprecation policy (`docs/guides/DEPRECATION_POLICY.md`)
+- Migration guide template (`docs/guides/MIGRATION_GUIDE_TEMPLATE.md`)
+- **HashiCorp Vault integration** — `vault://` URI scheme for resolving secrets in flow operator configs at runtime. Enable via `secrets.vault.enabled: true` in `docling-pipelines-config.yaml`. Credentials (`VAULT_ROLE_ID`, `VAULT_SECRET_ID`) supplied via environment variables. Supports AppRole auth, KV v1/v2, TLS, mTLS, Vault Enterprise namespaces, and Docker/Kubernetes file-backed secrets.
+- **GPU acceleration for `ExtractOperator`** — `docling_library` provider now supports GPU device selection via `standard_pipeline.accelerator` in `provider_config`. Accepted devices: `mps` (Apple Silicon), `cuda`, `cuda:<index>` (NVIDIA), `xpu` (Intel). When `device` is omitted from the accelerator block, the best available GPU is auto-detected at runtime via torch (CUDA → MPS → XPU). Validates device availability via torch backends before loading any model. Requires `max_workers: 1` and `use_processes: false`. One `DocumentConverter` is constructed per adapter execution and reused across all documents. Flows without accelerator config are unaffected.
+- Flow execution now defaults `enable_micro_batching` to `true` for CLI, REST job runs, and `DocpipeFlowManager` when the flow does not set it explicitly. A user-provided `global_config.enable_micro_batching` value still overrides the default.
+
+### Fixed
+
+- `scripts/test_examples.py --dry-run` now skips examples before probing Ollama, OpenSearch, environment variables, or example files.
+
+---
+
+## [0.1.0] - 2025-07-15
+
+### Added
+
+- Modular operator-based data processing framework for building document curation pipelines
+- **Extract operators**: `ExtractOperator` with support for Docling document extraction, entity extraction, and multiple output modes
+- **Ingest operators**: `IngestLocalOperator`, `IngestSourceOperator` with support for local filesystem, S3, Azure Blob, Google Cloud Storage, and Box
+- **ACL operators**: `ACLOperator` for access control list management
+- **Functional operators**: `ChunkerOperator`, `EmbeddingsOperator`, `BranchingOperator`, `NOOPOperator`, `MergeOperator`, `EntityCurationOperator`, `DocIdHashOperator`
+- **Quality operators**: `EdedupOperator`, `RedactionOperator`, `LanguageDetect`, `SQLFilterOperator`, `DocumentClassifierOperator`, `ReadabilityOperator`, `PIIAndHAPAnnotator`, `MLEnrichmentOperator`, `DocQuality`
+- **Storage operators**: `DocumentSetOperator` for document set management
+- **VectorDB operators**: `VectorDBOperator` with OpenSearch adapter
+- DAG-based flow execution model defined via JSON flow configuration files
+- Prefect orchestration layer for parallel execution and task dependency management
+- FastAPI REST service with OpenAPI / Swagger documentation
+- CLI entry point (`docling-pipelines`) for flow execution, validation, and operator listing
+- Python library interface via `DocpipeFlowManager`
+- PyArrow table format for all inter-operator data transfer
+- JSON structured logging (`DS_LOG_JSON=True`) via `ConditionalFormatter`
+- Sensitive data sanitisation (`sanitize_sensitive_data()`) in REST API calls
+- Job run tracking with metadata aggregation
+- `detect-secrets` pre-commit hook integration
+- SonarQube, ruff, mypy, and Mend CI quality gates
+- Comprehensive documentation under `docs/`
+
+[Unreleased]: https://github.com/IBM/docling-pipelines/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/IBM/docling-pipelines/releases/tag/v0.1.0
